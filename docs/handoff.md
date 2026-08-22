@@ -43,6 +43,9 @@ git repositoryにしてある（2026-08-22、branchは`main`、remoteは未設�
   次の実行で現在の実測と完全一致したら復元する。手でwindowを動かしたあとに実行すると
   一致しないので、通常の整列になる。意図せざる復元は起きない。
   最小化されていたwindowは、復元後にもう一度最小化する。
+- **`--arrange`と`--restore`を足した。** toggleはtaskbar用に残し、方向が決まっている
+  呼び出し側は明示できるようにした。AI経由でSkillが呼ぶときは`--arrange`を渡す前提。
+  `--restore`は一致しなければ何も動かさずに報告する（整列へfallbackしない）。
 - **復元も2周適用にした。** 逆向きにDPI境界を跨ぐので、整列と同じ理由で1周では戻りきらない。
 - **検証を目標rect単位にした。** windowごとに高さが違うため、以前の「全windowが同じ`w`と`h`」
   という判定は使えない。`placed_as_requested`相当の照合がDPI回帰を検出する唯一の砦になった。
@@ -79,6 +82,10 @@ ai-dotfilesのmanaged Skillとして実機動作確認をしたところ、混�
   userはこの並びで自分のsessionを覚えるので、対応が変わると実質的な破壊になる。
 - **復元を「一致したときだけ」から緩めない。** 手で動かしたwindowを勝手に戻すのが
   一番困る失敗の形。判定は実測rectの完全一致で行う。
+- **`--restore`を整列へfallbackさせない。** 明示指定に対して逆の動作をしない。
+  一致しないときは何も動かさず理由を出す。推測してよいのは引数なしのtoggleだけ。
+- **整列済みへ`--arrange`を重ねたとき、`previous`を上書きしない。** 上書きすると
+  `previous == arranged`になり、復元しても何も動かないまま一致し続ける。実際に踏んだ欠陥。
 
 ## 変更したときの検証手順
 
@@ -113,9 +120,10 @@ summary行の`N of M`が`7 of 7`のように揃っていることを見る。こ
   shortcutのtargetは`align_terminals.pyw`を直接指す想定。1つのshortcutが整列と復元の
   両方を兼ねる（2回目のclickで戻る）ので、復元用に別のshortcutを置く必要はない。
 - **ai-dotfiles側のSKILL.mdが古い挙動を書いている。** `skills/align-terminals/SKILL.md`は
-  「呼べば整列する」前提で書かれている。今はSkill経由で1回、taskbarから1回と続けて呼ぶと
-  2回目が復元になる。canonical sourceへtoggleの説明を足す必要があるが、このsessionでは
-  別repositoryなので触っていない。
+  引数なしで呼ぶ前提で、summaryの例も1段時代のもの。`--arrange`を渡す形へ直し、
+  `Restored`の報告形式と「戻して」と言われたときの`--restore`を足す必要がある。
+  `skill.json`は`targets: ["claude"]`なのでClaude Codeだけが対象。反映はai-dotfiles側の
+  generate → test → source-only check → install dry-run → install → full check。
 - **最小化されていたwindowの経路は実機未確認。** `iconic`の記録と復元後の再最小化は、
   検証中に最小化されたwindowが無かったため一度も通っていない。論理上は、最小化中のwindowは
   rectが`-32000`になって`arranged`と一致しないので、再最小化されるのは整列時に自分が

@@ -7,8 +7,9 @@ sixth window on the layout gains a second row: the rightmost columns are split i
 top and a bottom half, and the split grows leftwards as more windows open.
 
 Running the script again puts the windows back where they were before the last run,
-as long as nothing has moved since. Only the Win32 API through ctypes is used, so the
-script has no third-party dependencies.
+as long as nothing has moved since. A caller that knows which direction it wants can
+ask for it outright instead of relying on that toggle. Only the Win32 API through
+ctypes is used, so the script has no third-party dependencies.
 """
 
 from __future__ import annotations
@@ -30,6 +31,15 @@ TERMINAL_PROCESS = "windowsterminal.exe"
 # Bumped whenever the snapshot layout changes, so an old file is ignored rather than
 # misread into a restore that moves windows somewhere unexpected.
 SNAPSHOT_VERSION = 1
+
+USAGE = """usage: align_terminals.pyw [--arrange | --restore]
+
+  (no argument)  arrange, or put the windows back when none of them has moved since
+                 the last run. This is what the taskbar shortcut uses.
+  --arrange      always arrange, never restore.
+  --restore      only restore. If a window has moved since the last run, report that
+                 and change nothing.
+"""
 
 
 def snapshot_path() -> str:
@@ -90,6 +100,19 @@ def _fail_gracefully(message: str) -> int:
 
 
 def main() -> int:
+    # A caller that means one direction says so; only the argument-free run guesses.
+    args = sys.argv[1:]
+    if args in (["--arrange"], ["--restore"]):
+        mode = args[0][2:]
+    elif not args:
+        mode = "toggle"
+    elif args in (["--help"], ["-h"]):
+        print(USAGE, end="")
+        return 0
+    else:
+        print(USAGE, end="", file=sys.stderr)
+        return 2
+
     if sys.platform != "win32":
         return _fail_gracefully(
             "align-terminals only runs on Windows; no window was changed."
@@ -289,10 +312,12 @@ def main() -> int:
 
     # Restoring only happens when every window still sits exactly where the last run
     # left it. Anything moved by hand since then means the user is asking for a fresh
-    # arrangement, not an undo.
+    # arrangement, not an undo, so an argument-free run arranges instead. An explicit
+    # --restore reports the mismatch rather than quietly doing the opposite.
     snapshot = read_snapshot() if measured_now else None
     arranged_before = entries_by_hwnd(snapshot.get("arranged")) if snapshot else None
-    if arranged_before is not None and arranged_before == measured_now:
+    already_arranged = arranged_before is not None and arranged_before == measured_now
+    if mode != "arrange" and already_arranged:
         previous = entries_by_hwnd(snapshot.get("previous"))
         if previous is not None and set(previous) == set(measured_now):
             was_iconic = {
@@ -317,6 +342,12 @@ def main() -> int:
                 summary += f" {rejected} SetWindowPos call(s) were rejected."
             print(summary)
             return 0
+
+    if mode == "restore":
+        return _fail_gracefully(
+            "The windows no longer match the last arrangement, so nothing was moved. "
+            "Run without --restore to arrange them."
+        )
 
     if len(targets) == 1:
         return _fail_gracefully(
@@ -349,6 +380,12 @@ def main() -> int:
         for hwnd, rect in current.items()
         if rect is not None
     ]
+    # Arranging what is already arranged must not forget where the windows were before
+    # the first run. Overwriting here would make a later restore undo nothing.
+    if already_arranged:
+        kept = entries_by_hwnd(snapshot.get("previous"))
+        if kept is not None and set(kept) == set(targets):
+            previous_entries = snapshot["previous"]
 
     ordered = sorted(targets, key=lambda hwnd: current[hwnd] or (0, 0, 0, 0))
     rects = layout(count, work_area.left, work_area.top, area_width, area_height)

@@ -18,6 +18,11 @@ Windows Terminalのwindowをprimary monitor上でcascade配置する単体tool�
   順に上下へ割る。この対応が変わるとuserが覚えたwindowの位置が崩れる。
 - 引数なしで整列と復元をtoggleする挙動を保つ。復元するのは、直前に自分が並べた実測と
   現在の実測が完全一致するときだけ。手で動かしたあとに勝手に復元してはいけない。
+- 引数の契約を保つ。`--arrange`は常に整列、`--restore`は復元だけ。**`--restore`を整列へ
+  fallbackさせない。** 「戻して」と頼まれて並べ替えるのが一番困る失敗なので、一致しない
+  ときは何も動かさず報告する。toggleは推測してよいが、明示された指定は推測しない。
+- 整列済みの状態へ`--arrange`を重ねても、snapshotの`previous`を上書きしない。上書きすると
+  復元先が「整列済みの位置」になり、元の位置へ戻れなくなる。
 - 外部packageを足さない。taskbarのshortcutから直接起動されるので、virtual environmentの
   activationを前提にできない。
 
