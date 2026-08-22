@@ -23,7 +23,8 @@ Windows Terminalのwindowを、primary monitor上で左から右へcascade配置
 | `tools/snapshot_rects.py` | 実行前のwindow座標をJSONへ保存 |
 | `tools/restore_rects.py` | snapshotから復元。検証の開始状態を作り直すのに使う |
 
-まだgit repositoryではない。`git init`はまだしていない。
+git repositoryにしてある（2026-08-22、branchは`main`、remoteは未設定）。
+`.gitignore`はroot直下の`*.json`を除外するので、検証で作るsnapshotは追跡されない。
 
 ## 直前のsessionでやったこと
 
@@ -80,7 +81,7 @@ summary行の`N of M`は`GetWindowRect`の実測なので、これが`5 of 5`の
   windowが並べば目的は果たされるので実害は無いが、診断を残したくなったら
   log fileへの出力を足すのが素直。なおこれは`pythonw.exe`の仕様からの推定で、
   double-click起動での実測はしていない。
-- **`git init`していない。** 独立projectにするなら入れておくとよい。
+- **remoteが無い。** localのcommitだけがある状態。公開する予定ができたら追加する。
 - **`MIN_WIDTH` 640のfloorに当たるとbandが280pxより狭くなる。** 7枚で
   offset 213pxまで縮むことを実測済み。意図した挙動だが、常用枚数が多いなら
   定数の見直し余地がある。
