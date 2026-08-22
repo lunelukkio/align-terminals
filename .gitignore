@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+
+# Window rect snapshots written by tools/snapshot_rects.py during verification.
+/*.json
