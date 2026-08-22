@@ -110,7 +110,16 @@ summary行の`N of M`が`7 of 7`のように揃っていることを見る。こ
 ## やりかけ・次にやること
 
 - **taskbar shortcutをまだ作っていない。** ユーザーが置く予定。
-  shortcutのtargetは`align_terminals.pyw`を直接指す想定。
+  shortcutのtargetは`align_terminals.pyw`を直接指す想定。1つのshortcutが整列と復元の
+  両方を兼ねる（2回目のclickで戻る）ので、復元用に別のshortcutを置く必要はない。
+- **ai-dotfiles側のSKILL.mdが古い挙動を書いている。** `skills/align-terminals/SKILL.md`は
+  「呼べば整列する」前提で書かれている。今はSkill経由で1回、taskbarから1回と続けて呼ぶと
+  2回目が復元になる。canonical sourceへtoggleの説明を足す必要があるが、このsessionでは
+  別repositoryなので触っていない。
+- **最小化されていたwindowの経路は実機未確認。** `iconic`の記録と復元後の再最小化は、
+  検証中に最小化されたwindowが無かったため一度も通っていない。論理上は、最小化中のwindowは
+  rectが`-32000`になって`arranged`と一致しないので、再最小化されるのは整列時に自分が
+  復帰させたwindowだけになる。
 - **double-click起動ではsummaryが見えない。** `pythonw.exe`にはconsoleが無く
   `sys.stdout`が`None`になるため`print()`がno-opになる。taskbar用途では
   windowが並べば目的は果たされるので実害は無いが、診断を残したくなったら
