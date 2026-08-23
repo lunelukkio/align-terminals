@@ -28,11 +28,20 @@ def load_module():
     return module
 
 
+def reading_order(rects):
+    """The order a second run will sort the windows in: top row first, left to right."""
+    return sorted(
+        range(len(rects)), key=lambda i: (rects[i][1], rects[i][0], rects[i][2])
+    )
+
+
 def problems(rects, count, area_width, area_height):
     """Return the ways this layout fails to be a usable arrangement."""
     found = []
     if len(rects) != count:
         found.append(f"expected {count} rects, got {len(rects)}")
+        return found
+    if not rects:
         return found
     for index, (left, top, width, height) in enumerate(rects, start=1):
         if left < 0 or left + width > area_width:
@@ -43,38 +52,60 @@ def problems(rects, count, area_width, area_height):
             found.append(f"window {index} has a non-positive size")
     if len(set(rects)) != len(rects):
         found.append("two windows share the same rect")
-    tops = {left for left, top, _w, _h in rects if top == 0}
-    bottoms = {left for left, top, _w, _h in rects if top != 0}
-    if not bottoms <= tops:
-        found.append("a bottom-row window has no column above it")
+
+    if max(left + width for left, _t, width, _h in rects) != area_width:
+        found.append("the rightmost column does not reach the right edge")
+    if max(top + height for _l, top, _w, height in rects) != area_height:
+        found.append("the bottom row does not reach the bottom edge")
+
+    tops = sorted({top for _l, top, _w, _h in rects})
+    first_row = {left for left, top, _w, _h in rects if top == tops[0]}
+    for top in tops[1:]:
+        lefts = {left for left, other, _w, _h in rects if other == top}
+        if not lefts <= first_row:
+            found.append(f"a window at top={top} has no column above it")
+
+    # A second run reassigns windows by reading order. If that disagrees with the
+    # order layout() emits, an already arranged set swaps windows between slots.
+    if reading_order(rects) != list(range(len(rects))):
+        found.append("re-arranging would shuffle windows between slots")
     return found
 
 
 def render(module, count, area_width, area_height):
     rects = module.layout(count, 0, 0, area_width, area_height)
     if not rects:
-        return f"n={count:2d}  (no window)"
+        reason = "raised only, not moved" if count == 1 else "no window"
+        return f"n={count:2d}  ({reason})"
 
     columns = sorted({left for left, _t, _w, _h in rects})
-    slot = {}
-    for index, (left, top, _w, _h) in enumerate(rects, start=1):
-        slot[(columns.index(left), 0 if top == 0 else 1)] = index
+    rows = sorted({top for _l, top, _w, _h in rects})
+    full_height = {
+        left for left, _t, _w, height in rects if height == area_height
+    }
 
-    rows = 2 if any(top for _l, top, _w, _h in rects) else 1
+    slot = {}
+    for index, (left, top, _w, height) in enumerate(rects, start=1):
+        first = rows.index(top)
+        last = len(rows) if height == area_height else first + 1
+        for row in range(first, last):
+            slot[(columns.index(left), row)] = index
+
     width = rects[0][2]
     offset = columns[1] - columns[0] if len(columns) > 1 else 0
+    overlap = max(0, width - offset) if len(columns) > 1 else 0
     heights = "/".join(str(height) for height in sorted({r[3] for r in rects}))
 
     lines = [
-        f"n={count:2d}  columns={len(columns)}  rows={rows}  "
-        f"width={width}  offset={offset}  heights={heights}"
+        f"n={count:2d}  columns={len(columns)}  rows={len(rows)}  "
+        f"width={width}  offset={offset}  overlap={overlap}  "
+        f"tall={len(full_height) if len(rows) > 1 else 0}  heights={heights}"
     ]
-    for row in range(rows):
+    for row in range(len(rows)):
         cells = "".join(
             f"{slot.get((column, row), ''):>{CELL}}" for column in range(len(columns))
         )
-        label = "top   " if row == 0 else "bottom"
-        lines.append(f"      {label} |{cells} |")
+        lines.append(f"      row {row} |{cells} |")
     for problem in problems(rects, count, area_width, area_height):
         lines.append(f"      FAIL   {problem}")
     return "\n".join(lines)
@@ -89,8 +120,8 @@ def main() -> int:
     module = load_module()
     print(
         f"work area {area_width}x{area_height}, "
-        f"OFFSET={module.OFFSET}, MIN_WIDTH={module.MIN_WIDTH}, "
-        f"MAX_COLUMNS={module.MAX_COLUMNS}"
+        f"MAX_PER_ROW={module.MAX_PER_ROW}, "
+        f"MAX_TILED_COLUMNS={module.MAX_TILED_COLUMNS}"
     )
     for count in range(1, max_count + 1):
         print(render(module, count, area_width, area_height))
