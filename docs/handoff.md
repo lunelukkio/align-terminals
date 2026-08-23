@@ -4,10 +4,9 @@
 
 ## Current Goal
 
-**Rust全面書き直しが完了し、production経路（Start Menu shortcut、ai-dotfilesのSkill）は
-Rust exeへ切り替わった。** 未commitの変更が2 repositoryにあるので、次はcommitの判断から。
-
-userの手作業が1つ残っている: **taskbarのpinの張り直し**（下のRemaining Work 1）。
+**Rust全面書き直しは、taskbar pinの張り直しとclick実動作の確認まで含めて完了した。**
+このrepoはcommit / push済み。残っているのはai-dotfiles側のcommitだけで、
+それはuserが別sessionで行う方針。
 
 ## User Request
 
@@ -61,6 +60,10 @@ virtualized 1920x1080を見るのは**DPI-unaware**の挙動（system-awareは�
 - snapshot相互運用: Pyが書いたものをRsがrestore、逆も成立。
 - exe体裁: subsystem値、RT_ICON/RT_GROUP_ICON/RT_MANIFEST埋め込み、PS capture、
   windowed版smoke（4枚）全て確認。
+- **taskbar pin経由の実動作（userのclick、2026-08-23）**: pinは`align-terminalsw.exe`を
+  直接指す（iconはexe埋め込み）。clickで整列、継ぎ目0px、3枚ともchromeより前面、
+  focusもterminalへ移った。snapshotも更新されている。shell外からの起動経路も含めて
+  全経路が実機で通った。
 
 ### cutover（完了）
 
@@ -103,19 +106,14 @@ repo外:
 
 ## Remaining Work
 
-1. **taskbarのpinを張り直す（userの手作業）。** 既存のpinは古い`.lnk`のcopyで、
-   まだ`pyw.exe`のPython版を指している。Start → `align-terminals` → 右click →
-   「タスクバーにピン留めする」で新しいshortcutをpinし、古いpinを外す。
-2. **shortcut（taskbar / Start Menu）clickの実動作確認。** windowed exeのshell経由の
-   動作とsubsystemは検証済みだが、shell以外からの起動は未確認。chrome前面で1 click →
-   全terminalが前面に整列、もう1 click →復元、を見る。
-3. **未commitをどうするか。** このrepoとai-dotfiles。ai-dotfilesはuserが別sessionで
-   commitする方針だった。
-4. **14枚だけ6列になる**（`14 % 3 = 2`で重なり深め。offset 288 / 重なり192px）。仕様として
+1. **ai-dotfilesのcommit。** `skills/align-terminals/SKILL.md`と
+   `generated/skills/link-plan.json`が未commit（配備は済んでいるのでcommitだけ）。
+   userが別sessionで行う方針。
+2. **14枚だけ6列になる**（`14 % 3 = 2`で重なり深め。offset 288 / 重なり192px）。仕様として
    両実装同一。破綻はしない。
-5. **作業領域が縦に短い環境で、段の高さがTerminalの最小window高に当たる可能性。** 未確認。
-6. **復元先が負のxを持つと完全一致で戻せない**（隣monitorの倍率で解釈される）。既知の性質。
-7. Rust toolchainが無い環境ではbuildできない（配備済みexeは動く）。他OSへの展開は未考。
+3. **作業領域が縦に短い環境で、段の高さがTerminalの最小window高に当たる可能性。** 未確認。
+4. **復元先が負のxを持つと完全一致で戻せない**（隣monitorの倍率で解釈される）。既知の性質。
+5. Rust toolchainが無い環境ではbuildできない（配備済みexeは動く）。他OSへの展開は未考。
 
 ## Verification
 
@@ -128,7 +126,7 @@ Already run（このsession、すべて実測）: 上の「differential検証」
 - 検証中にsnapshotとdesktopを汚したが、windowの位置はsession開始時の実測値
   （scratchpadの`found_positions.json`）へ戻し、途中でuserが開いた4枚目もそのまま。
 
-Still needed: Remaining Work 1と2。
+Still needed: 無し（ai-dotfilesのcommitはuserの別session担当）。
 
 ## Risks
 
