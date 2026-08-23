@@ -1,0 +1,43 @@
+[package]
+name = "align-terminals"
+version = "0.1.0"
+edition = "2021"
+description = "Tile Windows Terminal windows across the primary monitor work area, and put them back"
+
+[lib]
+# The binaries keep the logic in a library so integration tests can reach it;
+# tests cannot import a bin crate.
+name = "align_terminals"
+path = "src/lib.rs"
+
+# Two binaries for the same reason Python ships python.exe and pythonw.exe:
+# shells capture and wait for the console one, the shortcut launches the
+# windowed one without a console flash.
+[[bin]]
+name = "align-terminals"
+path = "src/bin/cli.rs"
+
+[[bin]]
+name = "align-terminalsw"
+path = "src/bin/windowed.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dependencies.windows-sys]
+version = "0.60"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
+    "Win32_System_Console",
+]
+
+[build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+lto = true
+strip = true
