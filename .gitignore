@@ -3,3 +3,10 @@ __pycache__/
 
 # Window rect snapshots written by tools/snapshot_rects.py during verification.
 /*.json
+
+# Rust build tree and the deployed copies of the two binaries. The shortcut and
+# the Skill point at the root copies; refresh them with tools/deploy.ps1 (or
+# copy from target/release) after a release build.
+/target/
+/align-terminals.exe
+/align-terminalsw.exe

@@ -4,18 +4,32 @@ Windows Terminalのwindowをprimary monitor上へ隙間なく敷き詰める単�
 1段は最大5枚。2枚なら1/2幅、3枚なら1/3幅、4枚以降は1/4幅なので4枚はぴったり、
 5枚は均等に重なる。6枚目から2段、11枚目から3段。段数で割り切れない余りは左端の
 全高列になる。1枚のときは大きさも位置も変えず前面へ出すだけ。もう一度実行すると
-直前の位置へ戻る。Windows専用。標準libraryのctypesだけを使い、外部依存を持たない。
+直前の位置へ戻る。Windows専用。
+
+**本番はRust実装（`src/`、`cargo build --release`で2つのexe）。** `align_terminals.pyw`は
+削除されていないが本番経路ではなく、検証の正解表（oracle）である。挙動を変えるときは
+両方を変えるか、どちらも変えない。
 
 作業を始める前に`docs/handoff.md`を読むこと。設計判断の根拠は`DPI-verification.md`にある。
 
 ## 守ること
 
-- `align_terminals.pyw`のpathとfile名を変えない。ai-dotfilesの`align-terminals` Skillが
-  `~/Projects/Others/align-terminals/align_terminals.pyw`を直接指している。変更する場合は
-  ai-dotfilesのcanonical source側も同時に直し、generateからinstallまで通す。
+- repo root の`align-terminals.exe`と`align-terminalsw.exe`のpathとfile名を変えない。
+  ai-dotfilesの`align-terminals` Skillが前者を、Start Menuの`.lnk`が後者を直接指している。
+  変更する場合はSkillのcanonical sourceと`.lnk`も同時に直す。buildしただけでは
+  この2つは更新されない。`tools/deploy.ps1`がbuildとcopyをまとめて行う。
+- `align_terminals.pyw`も消さない・renameしない。oracleであり、
+  `tools/gen_layout_fixture.py`がこのfile名を直接読み込む。
 - 最終geometryは必ず2回要求する実装を保つ。1回に戻すと混在DPI環境で壊れる。
   復元も同じ理由で2回要求する。整列は隙間埋めのぶんが増えて「素のrectで1回 →
   広げたrectで2回」の3周になる。詳細は`DPI-verification.md`。
+- **manifestの`dpiAware=false`を外さない・`true`にしない。** oracleの全実測はDPI-unawareの
+  virtualized座標空間で行われている。`true`（system-DPI-aware）にするとexeがphysical座標を
+  見るようになり、snapshotの互換が壊れてrestoreすべき場面で再整列する。一度実際に踏んだ。
+- **2 bin構成を保つ。** `align-terminals.exe`（console）はscript用、`align-terminalsw.exe`
+  （windowed）はshortcut用。PowerShellはwindowed版を素の呼び出しではcaptureも待機もしない。
+- **summary文字列とCRLFの出力をPython oracleとbyte一致に保つ。** differentialがstdoutの
+  diffで成立している。文言を変えるときは両実装を同時に変える。
 - 前面化はgeometryと分離した`raise_to_front`で行い、`HWND_TOPMOST`→`HWND_NOTOPMOST`の
   一往復を保つ。`HWND_TOP`へ戻すと、foreground windowを所有しないprocessから起動したとき
   windowがbrowserの下へclampされる（`SetWindowPos`は成功を返すので気づけない）。
@@ -41,6 +55,9 @@ Windows Terminalのwindowをprimary monitor上へ隙間なく敷き詰める単�
   次の段）。`ordered`のsort keyを`(top, left)`から`(left, top)`へ戻さない。戻すと分割列の
   上下が交互に並んで、再整列のたびにwindowが席替えする。この対応が変わるとuserが
   覚えたwindowの位置が崩れる。
+- `layout()`を変えるときは`.pyw`と`src/layout.rs`の両方を変え、
+  `py -3 tools/gen_layout_fixture.py`でfixtureを作り直して`cargo test`を通す。
+  整数除算のoperandは非負を保つ（Pythonの`//`はfloor、Rustの`/`はtruncate）。
 - 引数なしで整列と復元をtoggleする挙動を保つ。復元するのは、直前に自分が並べた実測と
   現在の実測が完全一致するときだけ。手で動かしたあとに勝手に復元してはいけない。
 - 引数の契約を保つ。`--arrange`は常に整列、`--restore`は復元だけ。**`--restore`を整列へ
@@ -48,16 +65,24 @@ Windows Terminalのwindowをprimary monitor上へ隙間なく敷き詰める単�
   ときは何も動かさず報告する。toggleは推測してよいが、明示された指定は推測しない。
 - 整列済みの状態へ`--arrange`を重ねても、snapshotの`previous`を上書きしない。上書きすると
   復元先が「整列済みの位置」になり、元の位置へ戻れなくなる。
-- 外部packageを足さない。taskbarのshortcutから直接起動されるので、virtual environmentの
-  activationを前提にできない。
+- 依存を軽く保つ。Rust側は`windows-sys` + `serde`だけ、Python oracleは標準libraryのみ。
+  oracleはtaskbar経路から外れたが、fixture生成と実機differentialが依存の無さに乗っている。
 
 ## 検証
 
 見た目の確認だけでは不十分。混在DPI状態を作ってから検証する。手順は`docs/handoff.md`。
 
+自動で回るのは`cargo test`（layoutのunit test + Python oracleとの245 case differential）
+だけ。fixtureが古いと差分を見逃すので、layoutを触ったらまず
+`py -3 tools/gen_layout_fixture.py`。
+
 配置の算術だけなら`py -3 tools/layout_preview.py`で実機なしに確認できる。ただしこれは
 割り当てを見るだけで、DPIの挙動は実機でしか出ない。実機ではsummaryの`N of M`が揃うことを
 見る。**window毎に目標rectが違うので、「全windowが同じ幅と高さ」は判定条件にならない。**
+
+Rust側の挙動を疑うときは、同じ状況でoracleを走らせてstdoutと
+`tools/drawn_rects.py`・`tools/zorder_probe.py`の出力をdiffする。一致しなければ
+**Rust側の誤り**として直す。oracle側を直すのは、oracle自身のbugを実測で示せたときだけ。
 
 z-orderはsummaryに出ない。`py -3 tools/zorder_probe.py [label]`（read-only）で前面から順に
 実測する。前面化を触ったときは、**browserを前面にしてから`--arrange`を複数回**繰り返して

@@ -4,230 +4,147 @@
 
 ## Current Goal
 
-直近の依頼はすべて完了している。**2つのrepositoryに未commitの変更があるので、次はcommitの
-判断から。** `align-terminals`（このrepository）と`ai-dotfiles`。
+**Rust全面書き直しが完了し、production経路（Start Menu shortcut、ai-dotfilesのSkill）は
+Rust exeへ切り替わった。** 未commitの変更が2 repositoryにあるので、次はcommitの判断から。
 
-本題として残っているtaskは無い。
+userの手作業が1つ残っている: **taskbarのpinの張り直し**（下のRemaining Work 1）。
 
 ## User Request
 
-このsessionで対応したもの（すべて完了）:
+このsessionで対応したもの:
 
-1. 整列したwindowをbrowserより前面へ確実に出す。症状は「何回か起動させると、だんだん
-   後ろに移っていく」。**原因特定・修正・検証まで完了。**
-2. 配置規則の作り直し。cascadeをやめて敷き詰めへ。枚数ごとの指定は`DPI-verification.md`の
-   表のとおり。**完了。**
-3. 「それぞれのウィンドウの間に隙間が空いているので、これをきっちり埋めてほしい」。**完了。**
-4. ai-dotfiles側の`align-terminals` SKILL.mdを新しい挙動へ更新する。**完了。配備済み。**
-
-userが選んだ方針（`AskUserQuestion`で確認済み）:
-
-- 前面化の強さ: **整列時だけ持ち上げる**（常時topmost固定にはしない）。
-- focus: **現行の`SetForegroundWindow`のまま**（`AttachThreadInput`は使わない）。
-- 番号付け: **row-major に統一**（全高列 → 上段を左から右 → 次の段）。
-
-前段のtask（icon作成とshortcut作成）は前回sessionで完了している。
+1. 完了: align-terminalsのGitHub repository作成（private、`lunelukkio/align-terminals`）と
+   commit / push（前セッション区切りぶん）。
+2. 完了: Rust全面書き直しの計画（plan mode、承認済み）と実装・検証・cutover。
+   方針はuserと確認済み: **Python版は削除せずoracle（正解表）として残す**。
 
 ## Current State
 
-### 前面化（完了）
+### Rust実装（完了、配備済み）
 
-原因は`SetWindowPos(hwnd, HWND_TOP, ...)`のclampだった。**呼び出し側processがforeground
-windowを所有していないと、Windowsは対象をforeground windowのすぐ下へclampし、しかもTRUEを
-返す。** taskbar shortcutから起動したときの条件そのもの。最後の`SetForegroundWindow`が成功
-する1枚だけがbrowserの上に出て、残りは下に取り残されていた。
+- crate構成: `src/lib.rs`（`layout` / `snapshot` / `win` / `app`）+ 2つのbin。
+  logicは全て`src/app.rs`の`run()`にあり、binは薄いentry point。
+- **exeは2本**（python.exe / pythonw.exeと同じ理由）:
+  - `align-terminals.exe`（console, subsystem 3）… Skill・CLI用。PowerShellの素の
+    呼び出しでcaptureできることを実測済み。
+  - `align-terminalsw.exe`（windowed, subsystem 2）… taskbar shortcut用。consoleは
+    原理的に出ない。`AttachConsole`持ち。**PowerShellは素の呼び出しではこれを
+    captureも待機もしない**（実測: 0行。`| Out-String`なら取れる）。だから2本ある。
+- CLI・exit code・summary文字列はPython oracleと**byte一致**（usageのprogram名のみ意図的に
+  違う）。stdoutは**CRLF**（Pythonのtext modeに合わせた。LFだとdiffが全行不一致になる）。
+- snapshotは同一path・同一schema（version 1）。**両実装で相互運用できることを実測済み。**
+- 配備: exeはrepo rootへcopyして使う（`tools/deploy.ps1`がbuild+copy）。root copyは
+  gitignore対象。buildだけではshortcut/Skillに反映されない。
 
-修正は`raise_to_front`の新設。z-order専用のpassで、windowごとに`HWND_TOPMOST` →
-`HWND_NOTOPMOST`を一往復させる。topmost bandへの出入りはclampされない。
-これに伴い配置pass（`place()`。旧`apply_twice`）はgeometry専用になった（全周`SWP_NOZORDER`）。
+### 一番大事な発見: DPI awarenessの誤記が実測で暴かれた
 
-### 配置規則（完了）
+`DPI-verification.md`の旧記述「python.exeはsystem-DPI-aware」は**誤りだった**。
+virtualized 1920x1080を見るのは**DPI-unaware**の挙動（system-awareは逆でphysicalを見る）。
+この誤記を信じて最初のbuildで`dpiAware=true`のmanifestを埋めたら、exeが3840x2160空間で
+動き、Pythonのsnapshotを認識できず**restoreすべき場面で再整列した**。
 
-cascadeから敷き詰めへ作り直した。規則と枚数ごとの表は`DPI-verification.md`の
-「配置規則の作り直しと隙間埋め」にある。要点だけ:
+正解は`dpiAware=false`をbuild.rsで明示的に埋め込むこと。exeからRT_MANIFESTを抽出して
+確認済み。旧記述は原文の位置で訂正済み（`DPI-verification.md`の検証環境の節）。
 
-```
-rows    = ceil(count / 5)
-tall    = count % rows        左端に置く全高列
-columns = tall + count // rows
-width   = 作業領域幅 / min(columns, 4)
-offset  = (作業領域幅 - width) / (columns - 1)
-```
+### differential検証（Phase 5、全通過）
 
-1枚のときは`layout()`が空を返し、caller側が前面へ出すだけで大きさも位置も変えない。
+- 算術: `tools/gen_layout_fixture.py`がPython `layout()`から245 case（n=0..48×5 area、
+  非零原点を含む）を記録、`tests/layout_differential.rs`が完全一致をassert。`cargo test`通過。
+- 実機A/B（3枚）: Py `--arrange`とRs `--arrange`のdrawn rect / z-order / stdoutが**完全一致**。
+  Rs再整列でslot不変、snapshot `previous`保持。
+- 前面化: chrome前面→Rs `--arrange`×5連続、全terminalがchromeより前、TOPMOST残留なし。
+- 混在DPI: secondaryへpark→`3 of 3`、継ぎ目0px。
+- toggle契約: 引数なし2回で復元→整列。手動nudge後の`--restore`は拒否して何も動かさない。
+- **最小化経路（両実装で初の実機検証）**: minimize→arrangeで復元して配置、
+  snapshotに`iconic: true`、restoreで再最小化。` 1 window(s) minimized again.`まで
+  両実装byte一致。
+- snapshot相互運用: Pyが書いたものをRsがrestore、逆も成立。
+- exe体裁: subsystem値、RT_ICON/RT_GROUP_ICON/RT_MANIFEST埋め込み、PS capture、
+  windowed版smoke（4枚）全て確認。
 
-**`count >= 7`の席替え不具合も同時に消えた。** `ordered`のsort keyを`(top, left)`にして
-`layout()`のemission順と一致させたため。前回のhandoffで「未修正」として残していたもの。
+### cutover（完了）
 
-`MIN_WIDTH` 640と`OFFSET` 280は廃止。`MAX_PER_ROW = 5`と`MAX_TILED_COLUMNS = 4`に置き換えた。
-
-### 隙間埋め（完了）
-
-`GetWindowRect`は描画されないリサイズ枠を含む。この環境ではscriptの座標系でL7 / T0 / R6 / B7。
-そのため`GetWindowRect`の座標で隣接させると枠2つ分の隙間が見える。
-
-`outset()`がwindowごとに枠を実測し、要求rectをその分だけ外へ広げる。枠は
-`GetClientRect` + `ClientToScreen`から求める。**この2つはscriptと同じ座標系を返すので
-倍率換算が要らない。**
-
-**副産物の発見: DPI-unawareなprocessでは、primary monitorの外の座標が隣のmonitorの倍率で
-読まれる。** `left = -7`を要求すると`-5`に着地する（× 144/192）。そこで`outset()`は
-広げる先が別monitor上になる辺だけ広げない。desktopの外（monitorが無い側）は広げてよい。
-結果、左端だけ枠の分だけ内側から始まり、右端と下端はぴったりになる。
-
-`placed`の判定は`outset()`が返す到達可能なrectと比べる。広げられなかった辺を目標から
-差し引かないと、この環境では常に`N-1 of N`になり本物の失敗を隠す。
-
-**もう1つの発見: DPI再スケール直後は枠の値が一時的に1pxずれる。** 落ち着いた枠が
-`7/0/6/7`のところ、境界を跨いだ直後は`7/0/7/7`を返す。この値で拡張量を計算すると
-描画幅が1px大きくなり、混在DPIで`Arranged 2 of 3`になっていた。同じ要求の再送では
-直らない（要求自体が誤っているため）。**枠を測り直して再計算する3周目**で一致し、
-4周目は何も変えない。そこで整列は「素のrectで1周 → 広げたrectで2周」の3周にした。
-1周目は全windowをtarget monitorへ乗せるためだけのもの。復元は広げないので従来どおり2周。
-
-### icon と shortcut（前回sessionで完了）
-
-- `tools/make_icon.py`と`align_terminals.ico`。7サイズ（16〜256px）、104KB。
-  256pxのみPNG frame、他はBMP(DIB)。全PNGにすると`Icon.ToBitmap()`が32px以上で落ちる。
-- shortcutを2箇所に作った（byte単位で同一）。targetは
-  `C:\WINDOWS\pyw.exe -3 "<project>\align_terminals.pyw"`。
-  - `%APPDATA%\Microsoft\Windows\Start Menu\Programs\align-terminals.lnk`
-  - `<Desktop>\align-terminals.lnk`（OneDriveへredirectされているので同期される）
-- **taskbarへのpinはuserの手作業。** Windows 11（26200）では`taskbarpin`のshell verbが
-  削除されている。Start → `align-terminals` → 右click → 「タスクバーにピン留めする」。
+- Start Menuの`.lnk`を書き換え: target = `<project>\align-terminalsw.exe`（引数なし=toggle）、
+  icon = exe埋め込み（`,0`）。Desktopの`.lnk`は消えていたので再作成していない。
+- ai-dotfiles `skills/align-terminals/SKILL.md`をexe起動へ更新し、
+  generate → skill tests（28 passed）→ source-only check PASS → dry-run（対象2件のみ）→
+  install → full check PASS まで完了。**配備済み。commitはしていない。**
 
 ## Files Touched
 
-このsessionで変更したもの（**すべて未commit**）:
+このrepo（**すべて未commit**。直前のcommit `1fe113f`まではpush済み）:
 
-- `align_terminals.pyw`: `layout()`を敷き詰め規則へ書き換え。`raise_to_front` / `outset` /
-  `content_rect` / `reading_order`を新設。`apply_twice`を`place()`へ改名しgeometry専用へ、
-  整列時は3周に。1枚のときの経路を「前面へ出すだけ」に変更。summaryをN段対応にし、
-  幅と高さを実測値へ。定数を入れ替え。
-- `tools/layout_preview.py`: N段対応へ書き換え。右端・下端への到達と再整列時の席替えも
-  自動判定するようにした。
-- `tools/zorder_probe.py`: 新規。read-onlyのz-order実測tool。**untracked。**
-- `AGENTS.md`: 冒頭の説明を新しい配置規則へ。不変条件を5つ追記。検証手順を追記。
-- `DPI-verification.md`: z-order不具合と、配置規則作り直し・隙間埋めの2節を追記。
-  負の座標に関する補足を既存節へ追記。
-- `docs/handoff.md`: このfile。
+- 新規: `Cargo.toml` / `Cargo.lock` / `build.rs` / `src/`（lib, app, layout, snapshot, win,
+  bin/cli, bin/windowed）/ `tests/layout_differential.rs` / `tests/fixtures/layout_cases.json`
+- 新規tools: `gen_layout_fixture.py` / `drawn_rects.py`（session scratchのgaps.pyを昇格）/
+  `deploy.ps1`
+- 更新: `.gitignore`（/target/とroot exe 2つ）/ `README.md` / `AGENTS.md` /
+  `DPI-verification.md` / `docs/handoff.md`
+- 変更なし: `align_terminals.pyw`（oracleとして凍結。fixture生成がこのfile名を直接読む）
 
-**別repository `~/Projects/ai-dotfiles`（こちらも未commit）:**
+repo外:
 
-- `skills/align-terminals/SKILL.md`: description、冒頭説明、`## 配置`、`## 報告`の出力例、
-  1枚のときの記述を新しい挙動へ更新。出力例は実機の実出力に差し替えた。
-- `generated/skills/link-plan.json`: generateがtree hashを更新（生成物）。
-
-`targets`は`["claude"]`のまま変えていない。`generated/codex`と`generated/antigravity`に
-align-terminals由来の出力は無く、Windows Terminal専用のSkillなので既存の判断を維持した。
-claude単独targetのSkillは他にも`handoff`、`migrate-config`、`git-guardrails-claude-code`がある。
-
-前回sessionから残っているuntracked:
-
-- `tools/make_icon.py`
-- `align_terminals.ico`
-
-repository外（git管理外、cloneし直しても再生成されない）:
-
-- `%APPDATA%\Microsoft\Windows\Start Menu\Programs\align-terminals.lnk`
-- `<Desktop>\align-terminals.lnk`
+- Start Menuの`.lnk`（書き換え済み）
+- `~/Projects/ai-dotfiles`: `skills/align-terminals/SKILL.md`と
+  `generated/skills/link-plan.json`が未commit（前セッションからの分も含め累積）。
+  そこにある無関係なuntracked `docs/deck-builder-skill.md`には触っていない。
 
 ## Decisions Made
 
-- **持ち上げをgeometryから切り離した。** geometryを伴う`SetWindowPos`は`WM_DPICHANGED`を
-  誘発しうる。z-order専用なら`SWP_NOMOVE | SWP_NOSIZE`で呼べるので、two-pass配置の
-  不変条件に一切触れずに済む。
-- **`HWND_TOPMOST`の一往復にした。** userが常時topmost固定を選ばなかったので、topmost
-  bandには滞在させない。往復後に`WS_EX_TOPMOST`が残っていないことは実測で確認済み。
-- **枠の実測に`GetClientRect` + `ClientToScreen`を使い、`DwmGetWindowAttribute`は使わない。**
-  DWMは物理座標を返すので倍率換算が要る。clientはscriptと同じ座標系なので換算が不要。
-  可視枠より数px内側になるが、そのぶん隣とわずかに重なるだけで隙間は生じない。
-- **端の辺は、はみ出す先にmonitorが無いときだけ広げる。** 一律にclampすると右端と下端に
-  不要な余白が出る。一律に広げると左端が別monitorの倍率で着地する。
-- **`count >= 7`の席替えは、別途直すのではなくsort key変更で自然に消した。**
-- **1枚のときにShowWindowで最小化解除はしない。** userの指定は「大きさとか位置は何も
-  変えない」。`SetForegroundWindow`が最小化を解くかどうかは未確認。
-- **commitしていない。** userから依頼が無い。
+- **Python版はoracleとして残す**（user確認済み）。実機の挙動を疑うときは両実装を同条件で
+  走らせてprobe出力をdiffし、不一致は**Rust側の誤り**として直す。
+- **manifestは明示的に`dpiAware=false`**。defaultに頼らないのは、上の1敗を将来へ残すため。
+- **単一exe + AttachConsole案は実測で棄却し、2 binへfallback**。計画に書いてあった
+  fallback条件（capture不安定）にPowerShellが該当した。
+- **CRLF出力**。differentialの成立条件。
+- 整数除算は全て非負operand（Python `//` = floor、Rust `/` = truncate の差を回避）。
+- fixture（245 case）はcommitする。`cargo test`がPython無しで回るため。
+- commitは論理単位で行う予定だが未実施（userの指示待ち）。
 
 ## Remaining Work
 
-1. **未commitの変更をどうするか。** 2つのrepositoryにある。
-   - `align-terminals`: 6 file（うち3つはuntracked）。`/closeout`が使える。
-   - `ai-dotfiles`: `skills/align-terminals/SKILL.md`と`generated/skills/link-plan.json`。
-     配備は済んでいるのでcommitだけの話。無関係なuntracked `docs/deck-builder-skill.md`が
-     あるが、こちらのsessionでは触っていない。
-2. **最小化されていたwindowの経路は実機未確認。** `iconic`の記録と復元後の再最小化は、
-   検証中に最小化されたwindowが無かったため一度も通っていない。1枚のときの経路も同様。
-3. **shortcut経由での実動作は未確認。** userが1と2の確認は済ませたと述べているが、
-   隙間埋めと新しい配置規則を入れたあとの確認はまだ。consoleからの`--arrange` /
-   `--restore` / 引数なしtoggleは全部通してある。
-4. **double-click起動ではsummaryが見えない。** `pythonw.exe`にconsoleが無く`sys.stdout`が
-   `None`になるため`print()`がno-opになる。taskbar用途では実害が無い。log fileへの出力を
-   足すのは素直な案。
-5. **remoteが無い。** localのcommitだけがある状態。
-6. **14枚だけ6列になる。** `14 % 3 = 2`で縦長2列＋4格子列のため、他より重なりが深い
-   （offset 288、重なり192px）。破綻はしない。userへ報告済み。
-7. **作業領域が縦に短いと、段の高さがTerminalの最小window高に当たる可能性がある。** 未確認。
-8. **復元先が負のxを持つと完全一致で戻せない。** 隣のmonitorの倍率で解釈されるため。
-   詳細は`DPI-verification.md`。
+1. **taskbarのpinを張り直す（userの手作業）。** 既存のpinは古い`.lnk`のcopyで、
+   まだ`pyw.exe`のPython版を指している。Start → `align-terminals` → 右click →
+   「タスクバーにピン留めする」で新しいshortcutをpinし、古いpinを外す。
+2. **shortcut（taskbar / Start Menu）clickの実動作確認。** windowed exeのshell経由の
+   動作とsubsystemは検証済みだが、shell以外からの起動は未確認。chrome前面で1 click →
+   全terminalが前面に整列、もう1 click →復元、を見る。
+3. **未commitをどうするか。** このrepoとai-dotfiles。ai-dotfilesはuserが別sessionで
+   commitする方針だった。
+4. **14枚だけ6列になる**（`14 % 3 = 2`で重なり深め。offset 288 / 重なり192px）。仕様として
+   両実装同一。破綻はしない。
+5. **作業領域が縦に短い環境で、段の高さがTerminalの最小window高に当たる可能性。** 未確認。
+6. **復元先が負のxを持つと完全一致で戻せない**（隣monitorの倍率で解釈される）。既知の性質。
+7. Rust toolchainが無い環境ではbuildできない（配備済みexeは動く）。他OSへの展開は未考。
 
 ## Verification
 
-このsessionで実施したもの（すべて実機）:
+Already run（このsession、すべて実測）: 上の「differential検証」の節のとおり。加えて
 
-- **前面化**: chromeを前面にしてから`--arrange`、を5回連続。5回ともterminalがchromeより前。
-  修正前は2回目以降で「1枚だけ前、残りはchromeの後ろ」になっていたので、症状の再現と
-  解消の両方を実測できている。復元がz-orderを触らないことも確認。
-- **配置の算術**: `layout_preview.py`で1〜16枚。はみ出し、重複rect、右端・下端への到達、
-  再整列時の席替えを自動判定して全件パス（FAIL行ゼロ）。
-- **実機3枚**: `Arranged 3 of 3`。描画rect`(7,0,633,1080) (640,0,640,1080) (1280,0,640,1080)`。
-  継ぎ目は**すべて0px**、右端は1920でぴったり。
-- **実機5枚**: `Arranged 5 of 5`。5列・幅480・offset 360・重なり120で均等。
-- **実機7枚**（テスト用に4枚開いて検証後に閉じた）: `Arranged 7 of 7`を3回連続。
-  左端に全高`(7,0,473,1080)`、右に`480x540`が3列×2段。継ぎ目すべて0px。
-  hwnd → rectの対応が3回とも完全に不変（席替えなし）。
-- **混在DPI**: 1枚をsecondary (144 DPI)へ800x700で置くと600x525へ再スケールされる状態を
-  作ってから`--arrange`。**3周化したあとの現在のcodeで**`Arranged 3 of 3`を2回連続、
-  継ぎ目もすべて0px。3周化する前は`2 of 3`だった。
-- `py -3 -m py_compile`（3 file）、`--help`のexit code 0。
-- **ai-dotfiles側**: generate（変更は`link-plan.json`のtree hashだけ）→ pytest全件
-  （323 passed / 19 skipped / 失敗0）→ source-only check `PASS` → install dry-run
-  （`UPDATE ~/.claude/skills/align-terminals`と`managed.json`の2件のみ、他は全て`UNCHANGED`）
-  → install → full check `PASS`。配備後のSKILL.mdがcanonical sourceとbyte一致することも確認。
+- `cargo test`: 4 test（unit 3 + differential 1）全通過。
+- `cargo build --release`: warning無し。root copyとbuildのsha256一致を確認。
+- ai-dotfiles pipeline: generate → pytest → check -SourceOnly → dry-run → install → check、
+  全てPASS。配備後のSKILL.mdツリーはcanonicalとdigest一致。
+- 検証中にsnapshotとdesktopを汚したが、windowの位置はsession開始時の実測値
+  （scratchpadの`found_positions.json`）へ戻し、途中でuserが開いた4枚目もそのまま。
 
-検証中に`%LOCALAPPDATA%\align-terminals\last_layout.json`の`previous`を汚したが、
-backupから書き戻してある。テスト用に開いた4枚も閉じ、desktopは整列状態で終えた。
-
-Still needed:
-
-- shortcut経由での実動作（remaining work 4）。
-- 最小化されたwindowの経路と、1枚のときの経路（remaining work 3）。
+Still needed: Remaining Work 1と2。
 
 ## Risks
 
-- **`align_terminals.pyw`のpathとfile名を変えない。** ai-dotfilesの`align-terminals` Skillと
-  2つの`.lnk`がこのabsolute pathを埋め込んでいる。移動やrenameは3箇所を同時に直す作業になる。
-- **不変条件を壊さない。** 一覧は`AGENTS.md`の「守ること」。とくに:
-  - 前面化を`HWND_TOP`へ戻さない（clampされる。`SetWindowPos`は成功を返すので気づけない）。
-  - `raise_to_front`から`SWP_NOMOVE | SWP_NOSIZE`を外さない。
-  - `apply_twice`でz-orderを触らない。
-  - 最終geometryを2回要求する構造を1回に戻さない（混在DPIで必ず壊れる）。
-  - 整列の1周目を「広げたrect」にしない。別monitor上の枠は尺度が違い、再スケール直後は
-    1pxずれる。広げるのは全windowがtarget monitorへ乗ったあとの2周と3周だけ。
-  - `outset()`の「別monitorへはみ出す辺は広げない」判定を外さない。
-  - `ordered`のsort keyを`(left, top)`へ戻さない（席替えが再発する）。
-  - 整列済みへ`--arrange`を重ねてもsnapshotの`previous`を上書きしない。
-  - `--restore`を整列へfallbackさせない。
-- **前面化の検証は1回では足りない。** 1回目は通ってしまう。browserを前面にしてから
-  複数回繰り返すこと。今回の不具合はまさにそこに隠れていた。
-- **隙間は`N of M`に出ない。** 隣り合う描画rectの端どうしを引き算して確かめること。
-- **`.lnk`はrepository外にある。** cloneし直しても再生成されない。
-- restore用のstateは`%LOCALAPPDATA%\align-terminals\last_layout.json`。repositoryには書かない。
-  `arranged`（並べた直後の実測window rect）と`previous`（並べる前の実測）を持ち、前者と
-  現在の実測が完全一致したときだけ後者へ戻す。**snapshotに入るのは描画rectではなく
-  window rect。** 復元はそれをそのまま`SetWindowPos`へ渡すため。
+- **exeのpathとfile名を変えない。** `.lnk`とSkillがroot copyを直接指す。`tools/deploy.ps1`が
+  build+copyの正規手順。
+- **`align_terminals.pyw`を消さない・renameしない・単独で変えない。** oracle。挙動を変える
+  ときは両実装を変え、`py -3 tools/gen_layout_fixture.py` → `cargo test`を通す。
+- **不変条件の一覧は`AGENTS.md`「守ること」。** 従来の5つ（2回要求 / TOPMOST往復 /
+  outset / monitor guard / snapshot契約）に加えて: `dpiAware=false`を外さない、
+  2 bin構成を保つ、summary文字列とCRLFのbyte一致を保つ。
+- **前面化と隙間の検証は1回では足りない。** browserを前面にして複数回。隙間は
+  `tools/drawn_rects.py`で引き算する（summaryには出ない）。
+- restore用stateは`%LOCALAPPDATA%\align-terminals\last_layout.json`。schemaを変えるときは
+  `SNAPSHOT_VERSION`を両実装で同時に上げる。
 
 ## Suggested Skills
 
-- `/closeout`: 未commitの6 fileをcommitする場合。
+- `/closeout`: このrepoの未commitをcommitする場合。
 - `/worklog`: この区切りを作業履歴へ記録する場合。

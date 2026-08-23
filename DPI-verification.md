@@ -10,7 +10,12 @@
 - Windows 11 Pro 10.0.26200
 - PRIMARY monitor: 3840x2160 @ 192 DPI (200%)、work area = monitor 全体（タスクバーは auto-hide）
 - secondary monitor: (-2560,0)-(0,1440) @ 144 DPI (150%)
-- interpreter: `py.exe -3` (Python 3.13.5)。system-DPI-aware なので virtualized な 1920x1080 を見る
+- interpreter: `py.exe -3` (Python 3.13.5)。virtualized な 1920x1080 を見る。
+  **注記 (2026-08-23): 当初ここに「system-DPI-aware なので」と書いたが、それは誤り。**
+  virtualized 座標を見るのは **DPI-unaware** の挙動で、system-DPI-aware はその逆
+  （physical を見る）。観測値は正しく、awareness の名前だけが間違っていた。
+  この誤記を信じて Rust 移植の manifest を `dpiAware=true` にしたら座標空間が
+  3840x2160 になった。詳細は下の「Rust 移植」の節
 - 対象 window: 5枚。うち3枚は実行前 secondary 側
 
 ## 見つかった不具合と修正
@@ -269,3 +274,75 @@ DPI 換算する必要が生じる。得るものが無いので、DPI-unaware �
 
 summary の px 値は interpreter が見ている座標空間の値。200% の 3840x2160 上では
 work area を 1920 幅と報告するが、これは正しい挙動であって bug ではない。
+
+## Rust 移植の differential 検証 (2026-08-23)
+
+production 経路を Rust の exe へ置き換えた。Python 版は削除せず oracle として残し、
+両実装の出力を probe で突き合わせた。CLI・exit code・summary 文字列は byte 単位で
+Python 版と同一（usage の program 名だけ意図的に違う）。
+
+### 算術の differential
+
+`tools/gen_layout_fixture.py` が Python `layout()` から 245 case（n=0..48 × 5 種類の
+work area、原点が 0 でないものを含む）を記録し、`tests/layout_differential.rs` が
+Rust 版との完全一致を assert する。`cargo test` で全通過。
+
+### DPI awareness で1敗した（manifest の罠）
+
+最初の build は manifest に `dpiAware=true`（system-DPI-aware）を埋めた。上の検証環境の
+節にあった「python は system-DPI-aware」という誤記を信じたため。結果、exe は physical
+座標（3840x2160）を見て、Python が書いた snapshot（1920 空間）を認識できず、
+**restore すべき場面で再整列した**。summary の `width 1267px/1280px, height 2160px` が
+即座に空間の違いを暴いた。
+
+正しくは **DPI-unaware = `dpiAware=false`**。virtualized 座標こそが Python oracle の
+空間で、負座標の clamp（`-7` → `-5`）も不可視枠の実測もすべてこの空間で測ってある。
+build.rs は明示的に `false` を埋め、検証で exe から manifest を抽出して確認した。
+default（manifest 無し）に頼らず明示するのは、この1敗を将来へ残すため。
+
+### exe は2本（python.exe / pythonw.exe と同じ理由）
+
+単一の windows-subsystem exe + `AttachConsole` 案は、実測で棄却した。
+
+| 呼び出し | 出力 |
+|---|---|
+| bash から（pipe capture） | 取れる |
+| PowerShell `$x = & exe` | **0行。しかも待機しない** |
+| PowerShell `& exe \| Out-String` | 取れる（380 chars） |
+
+素の PowerShell 呼び出しで出力が消え待機もしないのは Skill 経路として不安定なので、
+計画どおり2 bin へ fallback:
+
+- `align-terminals.exe` — console subsystem (3)。Skill と CLI 用。PowerShell の素の
+  呼び出しで capture できることを実測済み。
+- `align-terminalsw.exe` — windows subsystem (2)。taskbar shortcut 用。console は
+  一瞬も出ない（subsystem が GUI なので原理的に出ない）。`AttachConsole` を持つので
+  shell から呼べば出力は出るが、script からは呼ばない。
+
+どちらも同じ `app::run()` を呼ぶ薄い entry point で、icon（RT_ICON/RT_GROUP_ICON）と
+manifest（RT_MANIFEST, `dpiAware=false`）の埋め込みを resource 列挙で確認した。
+
+stdout は CRLF で出す。Python が text mode で CRLF を書くため、LF のままだと
+differential の diff が全行不一致になる（初回の `--help` diff で発覚）。
+
+### 実機 differential の結果（terminal 3枚、途中から4枚）
+
+| 項目 | 結果 |
+|---|---|
+| A/B: Py `--arrange` → Rs `--arrange` の drawn rect / z-order / stdout | **完全一致** |
+| Rs 再整列の slot 安定性・snapshot `previous` 保持 | 不変 |
+| snapshot 相互運用 | Py が書いた snapshot を Rs が restore、逆も成立 |
+| 前面化: chrome 前面 → Rs `--arrange` ×5連続 | 5回とも全 terminal が chrome より前、`WS_EX_TOPMOST` 残留なし |
+| 混在 DPI: secondary へ park → Rs `--arrange` | `3 of 3`、継ぎ目 0px |
+| toggle 契約: 引数なし2回 / 手動 nudge 後の `--restore` | 復元→整列 / 拒否して何も動かさない |
+| **最小化経路（両実装で初の実機検証）** | minimize → arrange で復元して配置、snapshot に `iconic: true`、restore で再最小化。` 1 window(s) minimized again.` まで両実装 byte 一致 |
+| windowed 版 smoke | 4枚で arrange → restore 正常 |
+
+### Rust 側で新たに守ること
+
+- manifest の `dpiAware=false` を外さない・`true` にしない（上の1敗）。
+- 2 bin 構成を保つ。script から `align-terminalsw.exe` を呼ばない。
+- stdout の CRLF を保つ。summary 文字列は Python oracle と byte 一致を保つ。
+- `layout()` を変えるときは .pyw と Rust の両方を変え、`tools/gen_layout_fixture.py` で
+  fixture を作り直して `cargo test` を通す。
+- 整数除算は全て非負 operand を保つ（Python `//` は floor、Rust `/` は truncate）。

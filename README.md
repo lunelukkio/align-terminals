@@ -4,14 +4,16 @@
 単体tool。並行して動かしているagent sessionを一望するために作った。もう一度実行すると
 並べる前の位置へ戻す。
 
-Windows専用。標準libraryの`ctypes`だけを使い、外部依存を持たない。
+Windows専用。本番はRust実装で、exeが2本できる。Pythonで書かれた初代
+（`align_terminals.pyw`）は検証の正解表（oracle）として残っている。
 
 ## 使い方
 
 ```console
-py -3 align_terminals.pyw --arrange    # 常に整列
-py -3 align_terminals.pyw --restore    # 常に復元
-py -3 align_terminals.pyw              # toggle（taskbarのshortcut用）
+align-terminals.exe --arrange    # 常に整列
+align-terminals.exe --restore    # 常に復元
+align-terminals.exe              # toggle
+align-terminalsw.exe             # 同上。console窓を出さない版（taskbarのshortcut用）
 ```
 
 引数なしはtoggleとして動く。前回並べた位置からwindowが1枚も動いていなければ復元、
@@ -27,8 +29,20 @@ Arranged 7 of 7 Windows Terminal windows: 4 column(s), 2 row(s), width 473px/480
 offset 480px, height 540px/1080px, measured after placement. Run again to put them back.
 ```
 
-`.pyw`なのでdouble-clickでは`pythonw.exe`が使われ、consoleが無いためsummaryは見えない。
-taskbarから使うぶんには実害が無い。出力を読みたいときは上のようにconsoleから起動する。
+exeがpython.exe / pythonw.exeと同じ理由で2本ある。`align-terminals.exe`はconsole版で、
+どのshellからでもstdoutを捕捉できる。scriptから呼ぶのはこちら。`align-terminalsw.exe`は
+windowed版で、shortcutから起動してもconsoleが一瞬も出ない。かわりにPowerShellは素の
+呼び出しでは出力を捕捉も待機もしないので、scriptからは呼ばない。
+
+## Build
+
+```console
+cargo build --release
+powershell -File tools/deploy.ps1   # buildしてrepo rootの2つのexeを更新する
+```
+
+依存は`windows-sys`と`serde`だけ。shortcutとSkillはrepo rootのexeを指しているので、
+buildしただけでは反映されない。`tools/deploy.ps1`がcopyまで行う。
 
 ## 配置
 
@@ -61,17 +75,17 @@ py -3 tools/layout_preview.py 16 1920 1040
 
 ## taskbarから使う
 
-`align_terminals.ico`が付属する。shortcutのtargetを次の形にして、iconにこのfileを指定する。
+shortcutのtargetを次の形にする。iconはexeに埋め込み済みなのでexe自身を指せばよい。
 
 ```text
-C:\WINDOWS\pyw.exe -3 "<project>\align_terminals.pyw"
+<project>\align-terminalsw.exe
 ```
 
 **taskbarへのpinは手作業。** Windows 11では`taskbarpin`のshell verbが削除されているので
 scriptから留められない。Startで名前を入力し、右clickして「タスクバーにピン留めする」を選ぶ。
 
 iconを描き直したいときは`py -3 tools/make_icon.py`。標準libraryだけでPNG/DIBを描いて
-`.ico`へ詰める。
+`.ico`へ詰める。描き直したら`tools/deploy.ps1`でexeへ埋め込み直す。
 
 ## 状態の保存先
 
@@ -94,13 +108,32 @@ Windowのz-orderとDPIには、素直に書くと必ず踏む罠がいくつか�
 - **DPI-unawareなprocessでは、primary monitorの外の座標が隣のmonitorの倍率で読まれる。**
   `left = -7`を要求すると`-5`に着地する。だから別monitorへはみ出す辺は広げない。
 
+- **DPI awarenessはmanifestで明示的にunawareへ固定してある。** virtualized座標こそが
+  実測の基盤で、system-DPI-awareにするとphysical座標になり全部ずれる。Rust移植の
+  初回buildで実際に踏んだ。
+
 変更する前に[`AGENTS.md`](AGENTS.md)の「守ること」を読むこと。上の罠は一度直しても、
 知らずに書き戻すと簡単に再発する。
+
+## Python oracle
+
+`align_terminals.pyw`は本番経路から外れたが削除しない。挙動の正解表として使う。
+
+- `tools/gen_layout_fixture.py`が`layout()`の出力245 caseを記録し、`cargo test`が
+  Rust版との完全一致を検証する（実機なしで回る唯一のdifferential）。
+- 実機の挙動を疑うときは、同じ状況で両実装を走らせてstdoutとprobe出力をdiffする。
+  一致しなければRust側の誤りとして直す。
+
+CLIとsummary文字列は両実装でbyte一致（usageのprogram名だけ違う）。snapshotも同じ
+fileを共有し、片方が並べたものをもう片方が復元できる。
 
 ## Tools
 
 | file | 用途 |
 |---|---|
+| `tools/deploy.ps1` | release buildしてrepo rootの2つのexeを更新する |
+| `tools/gen_layout_fixture.py` | Python oracleから`cargo test`用のfixtureを再生成する |
+| `tools/drawn_rects.py` | 描画rectと継ぎ目を実測する（read-only）。隙間はsummaryに出ない |
 | `tools/layout_preview.py` | 配置の算術を実機なしで確認する |
 | `tools/zorder_probe.py` | top-level windowのz-orderを前面から順に実測する（read-only） |
 | `tools/make_icon.py` | `align_terminals.ico`を生成する |
