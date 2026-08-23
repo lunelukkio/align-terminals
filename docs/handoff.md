@@ -75,7 +75,7 @@ virtualized 1920x1080を見るのは**DPI-unaware**の挙動（system-awareは�
 
 ## Files Touched
 
-このrepo（**すべて未commit**。直前のcommit `1fe113f`まではpush済み）:
+このrepo（**commit / push済み**。`8aafeb4`〜`cb6e269`の4 commit）:
 
 - 新規: `Cargo.toml` / `Cargo.lock` / `build.rs` / `src/`（lib, app, layout, snapshot, win,
   bin/cli, bin/windowed）/ `tests/layout_differential.rs` / `tests/fixtures/layout_cases.json`
@@ -102,7 +102,6 @@ repo外:
 - **CRLF出力**。differentialの成立条件。
 - 整数除算は全て非負operand（Python `//` = floor、Rust `/` = truncate の差を回避）。
 - fixture（245 case）はcommitする。`cargo test`がPython無しで回るため。
-- commitは論理単位で行う予定だが未実施（userの指示待ち）。
 
 ## Remaining Work
 
@@ -144,5 +143,4 @@ Still needed: 無し（ai-dotfilesのcommitはuserの別session担当）。
 
 ## Suggested Skills
 
-- `/closeout`: このrepoの未commitをcommitする場合。
 - `/worklog`: この区切りを作業履歴へ記録する場合。
