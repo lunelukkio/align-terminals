@@ -1,5 +1,180 @@
 # align-terminals
 
+Tiles open Windows Terminal windows across the primary monitor's work area with
+no gaps. Built to see every running agent session at a glance. Run it again to
+put the windows back where they were.
+
+Windows only. The production implementation is in Rust and produces two exe
+files. The original Python version (`align_terminals.pyw`) is kept as the
+verification oracle.
+
+## Usage
+
+```console
+align-terminals.exe --arrange    # always arrange
+align-terminals.exe --restore    # always restore
+align-terminals.exe              # toggle
+align-terminalsw.exe             # same, windowed build (no console) for taskbar shortcuts
+```
+
+With no arguments it toggles: if no window has moved since the last arrange, it
+restores; otherwise it arranges. **It never restores on its own after you move
+a window by hand.**
+
+`--restore` reports and does nothing if the current layout doesn't match the
+last arranged layout. It never falls back to arranging — silently rearranging
+when the user asked to restore would be the worst failure mode.
+
+Each run prints a one-line summary. The numbers are measured after placement,
+not an echo of the requested values.
+
+```text
+Arranged 7 of 7 Windows Terminal windows: 4 column(s), 2 row(s), width 473px/480px,
+offset 480px, height 540px/1080px, measured after placement. Run again to put them back.
+```
+
+There are two exes for the same reason `python.exe` / `pythonw.exe` are
+separate. `align-terminals.exe` is the console build; its stdout can be
+captured from any shell, so scripts call this one. `align-terminalsw.exe` is
+the windowed build; no console flashes even when launched from a shortcut. As
+a tradeoff, a plain PowerShell invocation neither captures nor waits for it,
+so scripts must not call it.
+
+## Build
+
+```console
+cargo build --release
+powershell -File tools/deploy.ps1   # builds and refreshes the two exes at the repo root
+```
+
+Dependencies are just `windows-sys` and `serde`. The shortcut and the Skill
+point at the repo-root exes, so a plain build alone has no effect until
+`tools/deploy.ps1` copies them over.
+
+## Layout
+
+Each row holds at most 5 windows. A 6th window starts a 2nd row, an 11th
+starts a 3rd. Width is the work-area width divided by the column count, never
+narrower than a quarter. Up to 4 columns tile exactly; 5 columns overlap
+evenly while keeping that width. Any remainder that doesn't divide evenly into
+rows becomes a full-height column on the left.
+
+| count | rows | cols | width | layout |
+|---|---|---|---|---|
+| 1 | — | — | — | left in place, just brought to front |
+| 2 | 1 | 2 | 1/2 | 2 side by side, full height |
+| 3 | 1 | 3 | 1/3 | 3 side by side, full height |
+| 4 | 1 | 4 | 1/4 | 4 side by side, full height |
+| 5 | 1 | 5 | 1/4 | 5 side by side, full height, evenly overlapping |
+| 6 | 2 | 3 | 1/3 | 3 on top, 3 on bottom |
+| 7 | 2 | 4 | 1/4 | 1 full-height column on the left + 3 columns × 2 rows |
+| 8 | 2 | 4 | 1/4 | 4 columns × 2 rows |
+| 9 | 2 | 5 | 1/4 | 1 full-height column on the left + 4 columns × 2 rows, overlapping |
+| 10 | 2 | 5 | 1/4 | 5 columns × 2 rows, overlapping |
+
+Placement order follows reading order: the full-height column on the left
+first, then the top row left to right, then the next row. Windows further
+right end up more in front, so an overlapped window still shows the left edge
+of the one behind it. Re-arranging an already-arranged layout keeps each
+window in the same slot.
+
+You can check the assignment without a real machine:
+
+```console
+py -3 tools/layout_preview.py 16 1920 1040
+```
+
+## Using it from the taskbar
+
+Point the shortcut's target at:
+
+```text
+<project>\align-terminalsw.exe
+```
+
+The icon is embedded in the exe, so the shortcut can point at the exe itself.
+
+**Pinning to the taskbar is manual.** Windows 11 removed the `taskbarpin`
+shell verb, so it can't be pinned from a script. Type the name in Start,
+right-click, and choose "Pin to taskbar".
+
+To redraw the icon, run `py -3 tools/make_icon.py`. It draws PNG/DIB with only
+the standard library and packs it into `.ico`. After redrawing, re-embed it
+into the exes with `tools/deploy.ps1`.
+
+## Where state is stored
+
+Restore coordinates live in
+`%LOCALAPPDATA%\align-terminals\last_layout.json`, not in the repository. It
+holds both the measurement taken right after arranging and the one taken
+before arranging, and only restores to the latter when the former matches the
+current measurement exactly.
+
+## Why the implementation looks like this
+
+Window z-order and DPI have a few traps that a straightforward implementation
+always hits. The verification record is in
+[`DPI-verification.md`](DPI-verification.md). The highlights:
+
+- **The same geometry is applied twice.** A window that crosses a monitor's
+  DPI boundary rescales itself in response to `WM_DPICHANGED`, overwriting the
+  size you set. Dropping this to a single pass breaks in any mixed-DPI setup.
+- **Bringing a window to front is done separately from geometry, via one
+  round trip through `HWND_TOPMOST` → `HWND_NOTOPMOST`.** `HWND_TOP` clamps
+  the target just below the current foreground window when the calling
+  process doesn't own the foreground window — and `SetWindowPos` still
+  reports success, so the failure is silent.
+- **`GetWindowRect` includes the invisible resize border.** Placing windows
+  edge-to-edge using that rect leaves a visible gap of two borders. Each
+  window's border is measured and the requested rect is expanded accordingly.
+- **On a DPI-unaware process, coordinates outside the primary monitor are
+  interpreted at the neighboring monitor's scale.** Requesting `left = -7`
+  lands at `-5`. So edges that spill onto another monitor are never expanded.
+- **DPI awareness is pinned to unaware, explicitly, in the manifest.**
+  Virtualized coordinates are the basis for every measurement here; making the
+  process system-DPI-aware switches it to physical coordinates and throws
+  everything off. This was hit for real on the first Rust build.
+
+Read the "Must keep" section of [`AGENTS.md`](AGENTS.md) before changing
+anything — these traps are easy to reintroduce once fixed if you don't know
+they're there.
+
+## Python oracle
+
+`align_terminals.pyw` is off the production path but not deleted. It serves as
+the behavioral reference.
+
+- `tools/gen_layout_fixture.py` records 245 cases from `layout()`'s output, and
+  `cargo test` asserts an exact match against the Rust version (the only
+  differential check that runs without real hardware).
+- When Rust's behavior is in doubt, run both implementations under the same
+  conditions and diff stdout and probe output. A mismatch is treated as a bug
+  in the Rust side.
+
+The CLI and summary strings match byte-for-byte between the two
+implementations (only the program name in usage text differs). They also
+share the same snapshot file, so either one can restore a layout the other
+arranged.
+
+## Tools
+
+| file | purpose |
+|---|---|
+| `tools/deploy.ps1` | release-builds and refreshes the two exes at the repo root |
+| `tools/gen_layout_fixture.py` | regenerates the `cargo test` fixture from the Python oracle |
+| `tools/drawn_rects.py` | measures drawn rects and seams (read-only); gaps don't show in the summary |
+| `tools/layout_preview.py` | checks the placement arithmetic without real hardware |
+| `tools/zorder_probe.py` | measures top-level window z-order, front to back (read-only) |
+| `tools/make_icon.py` | generates `align_terminals.ico` |
+| `tools/dpi_probe.py` | prints monitor layout and DPI |
+| `tools/snapshot_rects.py`, `tools/restore_rects.py` | save/restore window coordinates during verification |
+
+---
+
+*日本語版は下にあります。*
+
+# align-terminals
+
 開いているWindows Terminalのwindowを、primary monitorのwork areaへ隙間なく敷き詰める
 単体tool。並行して動かしているagent sessionを一望するために作った。もう一度実行すると
 並べる前の位置へ戻す。
