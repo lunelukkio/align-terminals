@@ -65,8 +65,8 @@ def layout(
     every window listed before it and the left edge band of the earlier ones stays
     visible. The order is the reading order of the grid. Any full-height column comes
     first, then the top row left to right, then the row below it, and so on. Sorting
-    windows by (top, left) reproduces this order, which is what lets a second run
-    hand every window back the slot it already occupies.
+    windows by (top, left) gives the initial reading order. assign_slots() preserves
+    the saved window-to-slot mapping independently of invisible frame borders.
 
     A row holds at most MAX_PER_ROW windows, so the row count is count / MAX_PER_ROW
     rounded up. Within that, count // rows columns each hold one window per row and
@@ -106,6 +106,169 @@ def layout(
             for column in range(tall, columns)
         )
     return rects
+
+
+def reserve_taskbar(area, monitor, edge, thickness):
+    """Reserve the full thickness at a monitor edge without double subtraction."""
+    left, top, width, height = area
+    ml, mt, mw, mh = monitor
+    right, bottom = left + width, top + height
+    if (thickness <= 0 or min(width, height, mw, mh) <= 0
+            or left < ml or top < mt or right > ml + mw or bottom > mt + mh):
+        return area
+    if edge == 0:
+        left = max(left, ml + thickness)
+    elif edge == 1:
+        top = max(top, mt + thickness)
+    elif edge == 2:
+        right = min(right, ml + mw - thickness)
+    elif edge == 3:
+        bottom = min(bottom, mt + mh - thickness)
+    else:
+        return area
+    if left >= right or top >= bottom:
+        return area
+    return left, top, right - left, bottom - top
+
+
+def _distance(a, b):
+    """Squared distance of doubled centers; half pixels stay exact."""
+    dx = 2 * (a[0] - b[0]) + a[2] - b[2]
+    dy = 2 * (a[1] - b[1]) + a[3] - b[3]
+    return dx * dx + dy * dy
+
+
+def _nearest_slots(anchors, slots):
+    """Rectangular Hungarian assignment, with deterministic equal-cost choices."""
+    n, m = len(anchors), len(slots)
+    assert n <= m
+    u, v = [0] * (n + 1), [0] * (m + 1)
+    owner, via = [0] * (m + 1), [0] * (m + 1)
+    for row in range(1, n + 1):
+        owner[0] = row
+        col = 0
+        best, used = [math.inf] * (m + 1), [False] * (m + 1)
+        while True:
+            used[col] = True
+            active = owner[col]
+            delta, next_col = math.inf, 0
+            for j in range(1, m + 1):
+                if not used[j]:
+                    cost = _distance(anchors[active - 1], slots[j - 1]) - u[active] - v[j]
+                    if cost < best[j]:
+                        best[j], via[j] = cost, col
+                    if best[j] < delta:
+                        delta, next_col = best[j], j
+            for j in range(m + 1):
+                if used[j]:
+                    u[owner[j]] += delta
+                    v[j] -= delta
+                else:
+                    best[j] -= delta
+            col = next_col
+            if owner[col] == 0:
+                break
+        while col:
+            before = via[col]
+            owner[col] = owner[before]
+            col = before
+    result = [0] * n
+    for j in range(1, m + 1):
+        if owner[j]:
+            result[owner[j] - 1] = j - 1
+    return result
+
+
+def assign_slots(current, previous, slots):
+    """Return handles in slot order, preferring saved seats over enumeration order.
+
+    Survivors choose first by their previous centers. New windows take the remaining
+    slots. If the same windows are still open, reuse the saved slot order exactly.
+    """
+    assert len(current) == len(slots)
+    current_map, seen, known = dict(current), set(), []
+    for hwnd, rect in previous:
+        if hwnd in current_map and hwnd not in seen and rect[2] > 0 and rect[3] > 0:
+            known.append((hwnd, rect))
+            seen.add(hwnd)
+    if len(previous) == len(slots) and len(known) == len(slots):
+        return [hwnd for hwnd, _ in known]
+    new = sorted(((hwnd, r) for hwnd, r in current if hwnd not in seen),
+                 key=lambda item: (item[1][1], item[1][0], item[1][2], item[1][3], item[0]))
+    result, available = [0] * len(slots), list(range(len(slots)))
+    for group in (known, new):
+        chosen = _nearest_slots([r for _, r in group], [slots[i] for i in available])
+        taken = set()
+        for (hwnd, _), index in zip(group, chosen):
+            slot = available[index]
+            result[slot] = hwnd
+            taken.add(slot)
+        available = [i for i in available if i not in taken]
+    return result
+
+
+def primary_work_area():
+    """Read the work area and reserve a taskbar even when it is auto-hidden."""
+    import ctypes
+    from ctypes import wintypes
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+    class APPBARDATA(ctypes.Structure):
+        if ctypes.sizeof(ctypes.c_void_p) == 4:
+            _pack_ = 1
+        _fields_ = [("cbSize", wintypes.DWORD), ("hWnd", wintypes.HWND),
+                    ("uCallbackMessage", wintypes.UINT), ("uEdge", wintypes.UINT),
+                    ("rc", wintypes.RECT), ("lParam", wintypes.LPARAM)]
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    user32.SystemParametersInfoW.argtypes = [wintypes.UINT, wintypes.UINT,
+                                            ctypes.c_void_p, wintypes.UINT]
+    user32.SystemParametersInfoW.restype = wintypes.BOOL
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = wintypes.HWND
+    user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+    user32.MonitorFromPoint.restype = wintypes.HANDLE
+    user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    user32.MonitorFromWindow.restype = wintypes.HANDLE
+    user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MONITORINFO)]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.GetWindowRect.restype = wintypes.BOOL
+    shell32.SHAppBarMessage.argtypes = [wintypes.DWORD, ctypes.POINTER(APPBARDATA)]
+    shell32.SHAppBarMessage.restype = ctypes.c_size_t
+
+    def as_tuple(rect):
+        return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+
+    work = wintypes.RECT()
+    if not user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(work), 0):
+        return None
+    area = as_tuple(work)
+    primary = user32.MonitorFromPoint(wintypes.POINT(0, 0), 1)
+    taskbar = user32.FindWindowW("Shell_TrayWnd", None)
+    if not primary or not taskbar or user32.MonitorFromWindow(taskbar, 2) != primary:
+        return area
+    info, bar, measured = MONITORINFO(), APPBARDATA(), wintypes.RECT()
+    info.cbSize, bar.cbSize = ctypes.sizeof(info), ctypes.sizeof(bar)
+    if not user32.GetMonitorInfoW(primary, ctypes.byref(info)):
+        return area
+    if not shell32.SHAppBarMessage(5, ctypes.byref(bar)):
+        return area
+    if not user32.GetWindowRect(taskbar, ctypes.byref(measured)):
+        return area
+    # The shell's rc can use physical pixels. Measure thickness in our own DPI
+    # space instead, including the part slid off-screen while auto-hidden.
+    if bar.uEdge in (0, 2):
+        thickness = measured.right - measured.left
+    elif bar.uEdge in (1, 3):
+        thickness = measured.bottom - measured.top
+    else:
+        return area
+    return reserve_taskbar(area, as_tuple(info.rcMonitor), bar.uEdge, thickness)
 
 
 def _fail_gracefully(message: str) -> int:
@@ -173,13 +336,6 @@ def main() -> int:
     user32.SetForegroundWindow.restype = wintypes.BOOL
     user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
     user32.MonitorFromPoint.restype = wintypes.HANDLE
-    user32.SystemParametersInfoW.argtypes = [
-        wintypes.UINT,
-        wintypes.UINT,
-        ctypes.c_void_p,
-        wintypes.UINT,
-    ]
-    user32.SystemParametersInfoW.restype = wintypes.BOOL
 
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -193,7 +349,6 @@ def main() -> int:
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
 
-    SPI_GETWORKAREA = 0x0030
     MONITOR_DEFAULTTONULL = 0x0000
     SW_RESTORE = 9
     SW_MINIMIZE = 6
@@ -514,15 +669,11 @@ def main() -> int:
             iconic.add(hwnd)
             user32.ShowWindow(hwnd, SW_RESTORE)
 
-    work_area = wintypes.RECT()
-    if not user32.SystemParametersInfoW(
-        SPI_GETWORKAREA, 0, ctypes.byref(work_area), 0
-    ):
+    area = primary_work_area()
+    if area is None:
         print("Could not read the primary monitor work area.", file=sys.stderr)
         return 1
 
-    area_width = work_area.right - work_area.left
-    area_height = work_area.bottom - work_area.top
     count = len(targets)
 
     # Measured after the restore above, so a window that was minimized is remembered
@@ -541,18 +692,13 @@ def main() -> int:
         if kept is not None and set(kept) == set(targets):
             previous_entries = snapshot["previous"]
 
-    def reading_order(hwnd):
-        """Sort key matching the order layout() emits its rects in.
-
-        Top row first and left to right within a row, so an already arranged set
-        keeps every window in the slot it is in. Sorting by left first would
-        interleave the rows of a split column and shuffle the windows on every run.
-        """
-        left, top, width, height = current[hwnd] or (0, 0, 0, 0)
-        return (top, left, width, height)
-
-    ordered = sorted(targets, key=reading_order)
-    rects = layout(count, work_area.left, work_area.top, area_width, area_height)
+    # Saved slot order survives invisible border differences and a restore.
+    rects = layout(count, *area)
+    ordered = assign_slots(
+        [(hwnd, rect or (0, 0, 0, 0)) for hwnd, rect in current.items()],
+        list(arranged_before.items()) if arranged_before else [],
+        rects,
+    )
     pairs = list(zip(ordered, rects))
 
     rejected = place(pairs, fill_gaps=True)

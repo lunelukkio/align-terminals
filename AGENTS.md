@@ -51,10 +51,14 @@ Windows Terminalのwindowをprimary monitor上へ隙間なく敷き詰める単�
   ので、primary monitorの外の座標は隣のmonitorの倍率で解釈される。150% monitorが左に
   ある環境で`left = -7`を要求すると`-5`に着地する。desktopの外（monitorが無い側）へ
   はみ出すのは安全なので、そちらは広げてよい。これが端をぴったりにしている。
-- 割り当ては純関数`layout()`に閉じておく。順序は読む順（全高列 → 上段を左から右 →
-  次の段）。`ordered`のsort keyを`(top, left)`から`(left, top)`へ戻さない。戻すと分割列の
-  上下が交互に並んで、再整列のたびにwindowが席替えする。この対応が変わるとuserが
-  覚えたwindowの位置が崩れる。
+- 枠の形は純関数`layout()`に閉じておく。順序は読む順（全高列 → 上段を左から右 →
+  次の段）。windowとの対応は`assign_slots()`で前回snapshotの配置順を維持する。
+  rawな外枠の`(top, left)`sortへ戻さない。枠の上辺が1px違うだけでも席替えする。
+  枚数が変わったら既存windowを先に最小距離で割り当て、新規windowは空き枠を使う。
+  同点時の初期順は`(top, left, width, height, hwnd)`。前面化も常に枠の読む順で行う。
+- taskbarはauto-hideでも全厚を予約する。shellの矩形とprocessのDPI座標が同じだと仮定せず、
+  厚みは`GetWindowRect`で測る。monitor辺を基準にwork areaをclampし、二重控除しない。
+  placement policyを変えたら両実装を更新し、`tools/gen_placement_fixture.py`でfixtureを再生成する。
 - `layout()`を変えるときは`.pyw`と`src/layout.rs`の両方を変え、
   `py -3 tools/gen_layout_fixture.py`でfixtureを作り直して`cargo test`を通す。
   整数除算のoperandは非負を保つ（Pythonの`//`はfloor、Rustの`/`はtruncate）。
@@ -70,11 +74,13 @@ Windows Terminalのwindowをprimary monitor上へ隙間なく敷き詰める単�
 
 ## 検証
 
-見た目の確認だけでは不十分。混在DPI状態を作ってから検証する。手順は`docs/handoff.md`。
+見た目の確認だけでは不十分。混在DPI状態を作ってから検証する。
+手順と実測は`DPI-verification.md`と`docs/placement-plan.md`を参照する。
 
-自動で回るのは`cargo test`（layoutのunit test + Python oracleとの245 case differential）
-だけ。fixtureが古いと差分を見逃すので、layoutを触ったらまず
-`py -3 tools/gen_layout_fixture.py`。
+自動検証は`cargo test`（layoutとplacementのunit/differential test）と
+`tests/test_oracle.py`（テスト用Win32応答で実際のPython entry pointを検証）。
+fixtureが古いと差分を見逃すので、layout変更時は`tools/gen_layout_fixture.py`、
+placement変更時は`tools/gen_placement_fixture.py`で対応fixtureを先に再生成する。
 
 配置の算術だけなら`py -3 tools/layout_preview.py`で実機なしに確認できる。ただしこれは
 割り当てを見るだけで、DPIの挙動は実機でしか出ない。実機ではsummaryの`N of M`が揃うことを

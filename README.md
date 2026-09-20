@@ -242,6 +242,16 @@ buildしただけでは反映されない。`tools/deploy.ps1`がcopyまで行�
 windowほど前面になるので、重なっても後ろのwindowは左端の帯を見せる。整列済みの状態で
 もう一度整列しても、各windowは同じ枠に留まる。
 
+同じwindowが開いている間は、前回保存したwindowと枠の対応を再利用する。復元や手動移動の
+あとも、次の整列で前回の席へ戻る。枚数が増減したら、残っているwindowの前回中心位置から
+新しい枠への移動距離の二乗和が最小になるように割り当て、新しいwindowは空いた枠へ置く。
+windowの識別はhandleに基づくため、閉じて開き直したアプリの同一性までは記憶しない。
+
+taskbarはauto-hideでも表示時の厚みを確保し、その手前までを配置領域とする。
+通常表示ですでにwork areaから除外済みなら二重には差し引かない。上・左・右のtaskbarも
+同様に扱う。taskbarの取得に失敗した場合はWindowsが返す通常のwork areaを使う。
+1枚だけの場合は従来どおり位置・大きさを変えない。
+
 実機なしで割り当てを確認できる。
 
 ```console
@@ -295,7 +305,11 @@ Windowのz-orderとDPIには、素直に書くと必ず踏む罠がいくつか�
 `align_terminals.pyw`は本番経路から外れたが削除しない。挙動の正解表として使う。
 
 - `tools/gen_layout_fixture.py`が`layout()`の出力245 caseを記録し、`cargo test`が
-  Rust版との完全一致を検証する（実機なしで回る唯一のdifferential）。
+  Rust版との完全一致を検証する。
+- `tools/gen_placement_fixture.py`がwindowの増減・復元後の配置維持とtaskbar予約領域を
+  fixtureへ記録し、`cargo test`で両実装を照合する。
+- `Set-Location <project>; uv --no-cache run --offline --no-project --no-managed-python python -B -m unittest discover -s tests -p test_oracle.py`
+  で、テスト用Win32応答を使ってPythonの実際の配置処理を検証する。実desktopは操作しない。
 - 実機の挙動を疑うときは、同じ状況で両実装を走らせてstdoutとprobe出力をdiffする。
   一致しなければRust側の誤りとして直す。
 
@@ -308,9 +322,16 @@ fileを共有し、片方が並べたものをもう片方が復元できる。
 |---|---|
 | `tools/deploy.ps1` | release buildしてrepo rootの2つのexeを更新する |
 | `tools/gen_layout_fixture.py` | Python oracleから`cargo test`用のfixtureを再生成する |
+| `tools/gen_placement_fixture.py` | 配置維持とtaskbar予約のfixtureを再生成する |
 | `tools/drawn_rects.py` | 描画rectと継ぎ目を実測する（read-only）。隙間はsummaryに出ない |
+| `tools/placement_probe.py` | taskbar予約領域と各windowのはみ出しを測定する（read-only） |
 | `tools/layout_preview.py` | 配置の算術を実機なしで確認する |
 | `tools/zorder_probe.py` | top-level windowのz-orderを前面から順に実測する（read-only） |
 | `tools/make_icon.py` | `align_terminals.ico`を生成する |
 | `tools/dpi_probe.py` | monitor構成とDPIを表示する |
 | `tools/snapshot_rects.py`, `tools/restore_rects.py` | 検証中にwindow座標を保存・復元する |
+
+診断processが別desktopに隔離されていてwindowが0枚になる場合、
+`Set-Location <project>; uv --no-cache run --offline --no-project --no-managed-python python -B tools/placement_probe.py --input-desktop`
+で実際のinput desktopを読み取れる。OSがアクセスを許可する場合だけ有効。
+診断threadの接続先を変えるだけで、表示desktopの切替やwindow移動はしない。

@@ -12,7 +12,7 @@ pub const MAX_PER_ROW: i32 = 5;
 pub const MAX_TILED_COLUMNS: i32 = 4;
 
 /// A window rectangle in the coordinate space this process sees (virtualized
-/// logical pixels; the manifest pins the process to system DPI awareness so
+/// logical pixels; the manifest pins the process to DPI-unaware so
 /// this space matches the Python oracle's).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Rect {
@@ -27,9 +27,8 @@ pub struct Rect {
 /// Placement order is also z-order: each rect is raised in turn, so a window
 /// overlaps every window listed before it. The order is the reading order of
 /// the grid: any full-height column first, then the top row left to right,
-/// then the row below it. Sorting windows by (top, left) reproduces this
-/// order, which is what lets a second run hand every window back the slot it
-/// already occupies.
+/// then the row below it. The placement policy assigns handles to these
+/// slots using the saved arrangement, independently of outer frame borders.
 ///
 /// A row holds at most MAX_PER_ROW windows. Within that, count / rows columns
 /// each hold one window per row and the count % rows windows left over become
@@ -105,7 +104,11 @@ mod tests {
         let mut tops: Vec<i32> = rects.iter().map(|r| r.top).collect();
         tops.sort();
         tops.dedup();
-        let offset = if lefts.len() > 1 { lefts[1] - lefts[0] } else { 0 };
+        let offset = if lefts.len() > 1 {
+            lefts[1] - lefts[0]
+        } else {
+            0
+        };
         let tall = if tops.len() > 1 {
             rects.iter().filter(|r| r.height == area_height).count()
         } else {

@@ -8,6 +8,7 @@
 #[cfg(windows)]
 pub mod app;
 pub mod layout;
+pub mod placement;
 pub mod snapshot;
 #[cfg(windows)]
 pub mod win;

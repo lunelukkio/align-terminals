@@ -6,17 +6,22 @@
 //! without re-measuring (AGENTS.md lists the procedure).
 
 use crate::layout::Rect;
+use crate::placement::reserve_taskbar;
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT};
-use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, MonitorFromPoint, MONITOR_DEFAULTTONULL};
+use windows_sys::Win32::Graphics::Gdi::{
+    ClientToScreen, GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITOR_DEFAULTTOPRIMARY,
+};
 use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 use windows_sys::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows_sys::Win32::UI::Shell::{SHAppBarMessage, ABM_GETTASKBARPOS, APPBARDATA};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetClientRect, GetWindowRect, GetWindowThreadProcessId, IsIconic,
-    IsWindowVisible, SetForegroundWindow, SetWindowPos, ShowWindow, SystemParametersInfoW,
-    HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE,
+    EnumWindows, FindWindowW, GetClassNameW, GetClientRect, GetWindowRect,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow, SetWindowPos,
+    ShowWindow, SystemParametersInfoW, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, SPI_GETWORKAREA,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE,
 };
 
 const TERMINAL_CLASS: &str = "CASCADIA_HOSTING_WINDOW_CLASS";
@@ -153,7 +158,7 @@ fn monitor_at(x: i32, y: i32) -> *mut core::ffi::c_void {
 /// no DPI conversion enters the code.
 ///
 /// An edge that would grow onto a neighbouring monitor is left alone. This
-/// process is system-DPI-aware, so coordinates outside the primary monitor
+/// process is DPI-unaware, so coordinates outside the primary monitor
 /// are read in that monitor's scale and such a request lands somewhere else
 /// entirely: asking for left -7 next to a 150% monitor puts the window at -5.
 /// Growing into empty space past the end of the desktop has no such problem
@@ -308,12 +313,69 @@ pub fn work_area() -> Option<Rect> {
         bottom: 0,
     };
     let ok = unsafe {
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut r as *mut RECT as *mut core::ffi::c_void, 0)
+        SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            &mut r as *mut RECT as *mut core::ffi::c_void,
+            0,
+        )
     };
-    (ok != 0).then(|| Rect {
+    if ok == 0 {
+        return None;
+    }
+    let area = Rect {
         left: r.left,
         top: r.top,
         width: r.right - r.left,
         height: r.bottom - r.top,
-    })
+    };
+    Some(taskbar_work_area(area))
+}
+
+fn taskbar_work_area(area: Rect) -> Rect {
+    let primary = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+    let class: Vec<u16> = "Shell_TrayWnd\0".encode_utf16().collect();
+    let taskbar = unsafe { FindWindowW(class.as_ptr(), std::ptr::null()) };
+    if primary.is_null()
+        || taskbar.is_null()
+        || unsafe { MonitorFromWindow(taskbar, MONITOR_DEFAULTTONEAREST) } != primary
+    {
+        return area;
+    }
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let mut bar = APPBARDATA {
+        cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetMonitorInfoW(primary, &mut info) } == 0
+        || unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut bar) } == 0
+    {
+        return area;
+    }
+    // GetWindowRect is virtualized like our placement coordinates. Use only
+    // the docking edge from the shell response, not its potentially physical rc.
+    // Auto-hide moves the taskbar off-screen; its full thickness still applies.
+    let Some(measured) = window_rect(taskbar as Hwnd) else {
+        return area;
+    };
+    let thickness = match bar.uEdge {
+        0 | 2 => measured.width,
+        1 | 3 => measured.height,
+        _ => return area,
+    };
+    let m = info.rcMonitor;
+    reserve_taskbar(
+        area,
+        Rect {
+            left: m.left,
+            top: m.top,
+            width: m.right - m.left,
+            height: m.bottom - m.top,
+        },
+        bar.uEdge,
+        thickness,
+    )
 }

@@ -13,6 +13,7 @@
 //! usage text differs.
 
 use crate::layout::{layout, Rect};
+use crate::placement::assign_slots;
 use crate::snapshot::{self, Entry};
 use crate::win::{self, Hwnd};
 use std::collections::{BTreeMap, BTreeSet};
@@ -128,8 +129,10 @@ fn run() -> i32 {
                 .filter(|e| e.iconic == Some(true))
                 .map(|e| e.hwnd as Hwnd)
                 .collect();
-            let pairs: Vec<(Hwnd, Rect)> =
-                targets.iter().map(|&hwnd| (hwnd, previous[&hwnd])).collect();
+            let pairs: Vec<(Hwnd, Rect)> = targets
+                .iter()
+                .map(|&hwnd| (hwnd, previous[&hwnd]))
+                .collect();
             let rejected = win::place(&pairs, false);
             let restored = pairs
                 .iter()
@@ -203,7 +206,6 @@ fn run() -> i32 {
         .iter()
         .map(|&hwnd| (hwnd, win::window_rect(hwnd)))
         .collect();
-    let current_map: BTreeMap<Hwnd, Option<Rect>> = current.iter().copied().collect();
     let mut previous_entries: Vec<Entry> = current
         .iter()
         .filter_map(|&(hwnd, rect)| {
@@ -227,22 +229,44 @@ fn run() -> i32 {
         }
     }
 
-    // Sort key matching the order layout() emits its rects in: top row first
-    // and left to right within a row, so an already arranged set keeps every
-    // window in the slot it is in. Sorting by left first would interleave the
-    // rows of a split column and shuffle the windows on every run.
-    let mut ordered = targets.clone();
-    ordered.sort_by_key(|hwnd| {
-        let r = current_map[hwnd].unwrap_or(Rect {
-            left: 0,
-            top: 0,
-            width: 0,
-            height: 0,
-        });
-        (r.top, r.left, r.width, r.height)
-    });
-
+    // The snapshot preserves slot order even when per-window frame borders
+    // differ or a restore has moved the windows away from their arranged seats.
+    let anchors: Vec<(Hwnd, Rect)> = current
+        .iter()
+        .map(|&(hwnd, r)| {
+            (
+                hwnd,
+                r.unwrap_or(Rect {
+                    left: 0,
+                    top: 0,
+                    width: 0,
+                    height: 0,
+                }),
+            )
+        })
+        .collect();
+    let prior: Vec<(Hwnd, Rect)> = snap
+        .as_ref()
+        .map(|s| {
+            s.arranged
+                .iter()
+                .map(|e| {
+                    let [left, top, width, height] = e.rect;
+                    (
+                        e.hwnd as Hwnd,
+                        Rect {
+                            left,
+                            top,
+                            width,
+                            height,
+                        },
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let rects = layout(count as i32, area.left, area.top, area.width, area.height);
+    let ordered = assign_slots(&anchors, &prior, &rects);
     let pairs: Vec<(Hwnd, Rect)> = ordered.iter().copied().zip(rects.iter().copied()).collect();
 
     let rejected = win::place(&pairs, true) + win::raise_to_front(&ordered);
